@@ -475,17 +475,7 @@ def build_hosts_text(data):
     # 入口: 默认用 7 个实测可用优选域名循环分配; 可用 HOSTS_ENTRY 覆盖(逗号分隔)
     _entry = os.environ.get("HOSTS_ENTRY", "").strip()
     edge = [e.strip() for e in _entry.split(",") if e.strip()] or EDGE_HOSTS or [f"{EDT_DOMAIN}:443"]
-    lines = [
-        "# edgetunnel「自定义优选IP」清单 (整段复制, 追加到后台现有内容后面)",
-        f"# 自动更新: {data['generated_at']} (每 30 分钟重新检测)",
-        f"# 固定地址: {HOSTS_URL}",
-        "# 每行 = 入口地址#名字$sstp://vpn:vpn@节点:端口",
-        "# 入口用 7 个实测可用优选域名循环分配",
-        "# 名字 = 国家-住宅/机房-编号, 直接区分住宅与机房",
-        "# 名字固定; 只有 $sstp:// 后面的节点地址每 30 分钟自动更换",
-        "# 账号密码固定 vpn:vpn ; 节点端口必须保留",
-        "# ========================================================",
-    ]
+    lines = []
     idx = 0
     ordered = sorted(
         countries.items(),
