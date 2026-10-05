@@ -9,7 +9,7 @@ VPN Gate SSTP 节点检测流水线
   3. 按 host+port+protocol 去重
   4. 并发调用已部署的 Cloudflare Worker:  GET {WORKER}/check?proxyip=host:port
      (单节点 HTTP 成功 != 节点可用; 以 Worker 返回 JSON 的 success 字段为准)
-  5. 保留 success=true 的节点, 按国家分组, 生成公开节点数据与 EdgeTunnel 链式清单
+  5. 保留 success=true 的节点, 按国家分组, 生成 public/data.json + public/index.html
   6. 网页端 (GitHub Pages) 读取 data.json 展示
 
 退出码:
@@ -407,7 +407,7 @@ def build_outputs(results, raw_count, sstp_count, source):
     return data
 
 
-CHAIN_URL = os.environ.get("CHAIN_URL", "https://Yerdos0993.github.io/gate/chains.txt")
+CHAIN_URL = os.environ.get("CHAIN_URL", "https://jerylihub.github.io/gate/chains.txt")
 
 
 def build_chains_text(data):
@@ -465,7 +465,7 @@ EDGE_HOSTS = [
     if h.strip()
 ]
 
-HOSTS_URL = os.environ.get("HOSTS_URL", "https://Yerdos0993.github.io/gate/hosts.txt")
+HOSTS_URL = os.environ.get("HOSTS_URL", "https://jerylihub.github.io/gate/hosts.txt")
 
 
 def build_hosts_text(data):
@@ -474,9 +474,7 @@ def build_hosts_text(data):
     countries = data["countries"]
     # 入口: 默认用 7 个实测可用优选域名循环分配; 可用 HOSTS_ENTRY 覆盖(逗号分隔)
     _entry = os.environ.get("HOSTS_ENTRY", "").strip()
-    edge = [e.strip() for e in _entry.split(",") if e.strip()] or EDGE_HOSTS
-    if not edge:
-        die("EDGE_HOSTS/HOSTS_ENTRY 为空，无法生成 hosts.txt")
+    edge = [e.strip() for e in _entry.split(",") if e.strip()] or EDGE_HOSTS or [f"{EDT_DOMAIN}:443"]
     lines = [
         "# edgetunnel「自定义优选IP」清单 (整段复制, 追加到后台现有内容后面)",
         f"# 自动更新: {data['generated_at']} (每 30 分钟重新检测)",
@@ -522,6 +520,89 @@ def build_hosts_text(data):
     return "\n".join(lines) + "\n"
 
 
+# edgetunnel 完整订阅 (vless://) 配置
+EDT_UUID = os.environ["EDT_UUID"]
+EDT_DOMAIN = os.environ["EDT_DOMAIN"]
+EDT_FINGERPRINT = os.environ.get("EDT_FINGERPRINT", "chrome")
+SUB_URL = os.environ.get("SUB_URL", "https://jerylihub.github.io/gate/sub.txt")
+
+
+def _b64_secret_encode(plaintext, secret):
+    """复刻 edgetunnel 的 base64SecretEncode: UTF-8 循环密钥 XOR + 标准 base64。"""
+    data = plaintext.encode("utf-8")
+    key = secret.encode("utf-8")
+    mixed = bytes(data[i] ^ key[i % len(key)] for i in range(len(data)))
+    return base64.b64encode(mixed).decode("ascii")
+
+
+def _socks5_account(address, default_port=80):
+    """复刻 edgetunnel 的 获取SOCKS5账号: user:pass@host:port -> {username,password,hostname,port}。"""
+    address = re.sub(r"^(socks5|http|https|turn|sstp)://", "", address.strip(), flags=re.I).split("#")[0].strip()
+    at = address.rfind("@")
+    auth, hostpart = (address[:at], address[at + 1:]) if at != -1 else ("", address)
+    hostpart = hostpart.split("/")[0]
+    username = password = None
+    if auth:
+        if ":" not in auth:
+            try:
+                auth = base64.b64decode(auth + "=" * (-len(auth) % 4)).decode("utf-8")
+            except Exception:
+                pass
+        parts = auth.split(":", 1)
+        username = parts[0]
+        password = parts[1] if len(parts) > 1 else None
+    hostname, port = hostpart, default_port
+    if hostpart.count(":") == 1 and not hostpart.startswith("["):
+        h, p = hostpart.rsplit(":", 1)
+        if p.isdigit():
+            hostname, port = h, int(p)
+    return {"username": username, "password": password, "hostname": hostname, "port": port}
+
+
+def build_sub_text(data):
+    """生成 edgetunnel 完整 vless:// 订阅 (链式代理编码在 path)。
+    填进 edgetunnel 后台「订阅链接」URL, 客户端定时拉取即可自动轮换。"""
+    countries = data["countries"]
+    lines = [
+        "# edgetunnel 完整订阅 (vless://) —— 填进后台「订阅链接」URL",
+        f"# 自动更新: {data['generated_at']} (每 30 分钟重新检测)",
+        f"# 固定地址: {SUB_URL}",
+        f"# 节点域名: {EDT_DOMAIN} (传输 ws / TLS / fingerprint {EDT_FINGERPRINT})",
+        "# 名字固定; $sstp:// 链式代理(编码在 path)每 30 分钟自动更换",
+        "# 账号密码固定 vpn:vpn ; 节点端口已编码进 path",
+        "# ========================================================",
+    ]
+    ordered = sorted(
+        countries.items(),
+        key=lambda kv: (-int(kv[1].get("count") or 0), str(kv[1].get("code") or kv[0])),
+    )
+    for cname, grp in ordered:
+        code = str(grp.get("code") or "?").upper()
+        zh = COUNTRY_ZH.get(code) or (code if code and code != "?" else cname)
+        nodes = sorted(
+            grp["nodes"],
+            key=lambda n: (
+                0 if n.get("residential") == "residential" else 1,
+                n.get("latency_ms") is None,
+                n.get("latency_ms") or 0,
+                n.get("host") or "",
+            ),
+        )
+        for i, n in enumerate(nodes, 1):
+            name = f"{zh}-{i:02d}"
+            chain = {"type": "sstp", **_socks5_account(f"vpn:vpn@{n['host']}:{n['port']}", 443)}
+            chain_json = json.dumps(chain, separators=(",", ":"))
+            enc = _b64_secret_encode(chain_json, EDT_UUID)
+            path = quote("/video/" + enc, safe="")
+            link = (
+                f"vless://{EDT_UUID}@{EDT_DOMAIN}:443?security=tls&type=ws"
+                f"&host={EDT_DOMAIN}&fp={EDT_FINGERPRINT}&sni={EDT_DOMAIN}"
+                f"&path={path}&encryption=none&alpn=#{quote(name, safe='')}"
+            )
+            lines.append(link)
+    return "\n".join(lines) + "\n"
+
+
 def write_outputs(data):
     os.makedirs(PUBLIC_DIR, exist_ok=True)
     data_path = os.path.join(PUBLIC_DIR, "data.json")
@@ -550,8 +631,11 @@ def write_outputs(data):
     with open(hosts_path, "w", encoding="utf-8") as f:
         f.write(build_hosts_text(data))
 
-    # 不在 GitHub Pages 生成完整 VLESS 订阅，避免公开 EdgeTunnel UUID。
-    return data_path, html_path, chains_path, hosts_path
+    # 完整 vless:// 订阅 (填进后台「订阅链接」URL, 客户端自动轮换)
+    sub_path = os.path.join(PUBLIC_DIR, "sub.txt")
+    with open(sub_path, "w", encoding="utf-8") as f:
+        f.write(build_sub_text(data))
+    return data_path, html_path, chains_path, hosts_path, sub_path
 
 
 # ---------------------------------------------------------------------------
@@ -603,11 +687,12 @@ def main():
     log("RESULT", f"可用节点: {len(success)}")
     log("RESULT", f"国家数量: {data['stats']['countries']}")
 
-    data_path, html_path, chains_path, hosts_path = write_outputs(data)
+    data_path, html_path, chains_path, hosts_path, sub_path = write_outputs(data)
     log("WEBSITE", f"生成 {os.path.relpath(data_path, REPO_DIR)}")
     log("WEBSITE", f"生成 {os.path.relpath(html_path, REPO_DIR)}")
     log("WEBSITE", f"生成 {os.path.relpath(chains_path, REPO_DIR)}")
     log("WEBSITE", f"生成 {os.path.relpath(hosts_path, REPO_DIR)}")
+    log("WEBSITE", f"生成 {os.path.relpath(sub_path, REPO_DIR)}")
     log("WEBSITE", "完成 (GitHub Pages 部署由 workflow 执行)")
 
 
