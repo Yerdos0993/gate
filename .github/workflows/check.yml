@@ -38,6 +38,8 @@ jobs:
           CHECK_WORKER: "https://check.xiaoye.us.kg/check?sstp=vpn:vpn@"
           CHECK_CONCURRENCY: "32"
           CHECK_TIMEOUT: "90"
+          EDT_UUID: ${{ secrets.EDT_UUID }}
+          EDT_DOMAIN: ${{ secrets.EDT_DOMAIN }}
 
       - name: Ensure GitHub Pages is enabled (one-time auto setup)
         run: |
