@@ -456,14 +456,34 @@ def build_chains_text(data):
 
 # edgetunnel 入口地址池: 客户端直连 Cloudflare 的优选 IP:端口 (循环分配给每个国家节点当入口)
 # 可通过环境变量 EDGE_HOSTS 覆盖 (逗号分隔)
-EDGE_HOSTS = [
-    h.strip()
-    for h in os.environ.get(
-        "EDGE_HOSTS",
-        "cyberport.com:443,172.64.155.161:443,www.dbs.com:443,www.bathandbodyworks.co.th:443,www.transunion.hk:443",
-    ).split(",")
-    if h.strip()
-]
+# Resolved once per generation. Do not change SNI/Host when changing dial IP.
+EDGE_HOSTS = []
+
+
+def resolve_edge_hosts():
+    """Use manual override, then BestCF TLS endpoints, then EDT custom domain."""
+    manual = (os.environ.get("HOSTS_ENTRY") or os.environ.get("EDGE_HOSTS") or "").strip()
+    if manual:
+        selected = list(dict.fromkeys(x.strip() for x in manual.split(",") if x.strip()))
+        log("EDGE ENTRIES", f"手动入口: {len(selected)} 个")
+        return selected
+
+    if os.environ.get("BESTCF_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}:
+        try:
+            from bestcf import DEFAULT_URL, fetch_endpoints
+            url = os.environ.get("BESTCF_URL") or DEFAULT_URL
+            selected = fetch_endpoints(url=url, timeout=15)
+            if selected:
+                log("EDGE ENTRIES", f"BestCF 过滤后 {len(selected)} 个 IP:port 候选 (尚未验证 EDT2 端到端可用性)")
+                return selected
+            log("EDGE ENTRIES", "BestCF 未返回合格的 TLS 入口")
+        except Exception as exc:
+            log("EDGE ENTRIES", f"BestCF 获取失败: {type(exc).__name__}: {exc}")
+    else:
+        log("EDGE ENTRIES", "BestCF 已禁用")
+    log("EDGE ENTRIES", "回退至 EDT2 自定义域名，避免使用未验证的第三方域名列表")
+    return [f"{EDT_DOMAIN}:443"]
+
 
 HOSTS_URL = os.environ.get("HOSTS_URL", "https://jerylihub.github.io/gate/hosts.txt")
 
@@ -472,9 +492,8 @@ def build_hosts_text(data):
     """生成可直接粘贴到 edgetunnel 后台「自定义优选IP」框的清单。
     每行 = 入口地址#名字$sstp://... ; 名字固定, 底下 SSTP 节点每 30 分钟自动换。"""
     countries = data["countries"]
-    # 入口: 默认用 7 个实测可用优选域名循环分配; 可用 HOSTS_ENTRY 覆盖(逗号分隔)
-    _entry = os.environ.get("HOSTS_ENTRY", "").strip()
-    edge = [e.strip() for e in _entry.split(",") if e.strip()] or EDGE_HOSTS or [f"{EDT_DOMAIN}:443"]
+    # Shared entry pool for hosts.txt and sub.txt; IP and port must stay paired.
+    edge = EDGE_HOSTS or [f"{EDT_DOMAIN}:443"]
     lines = []
     idx = 0
     ordered = sorted(
@@ -566,6 +585,7 @@ def build_sub_text(data):
         countries.items(),
         key=lambda kv: (-int(kv[1].get("count") or 0), str(kv[1].get("code") or kv[0])),
     )
+    idx = 0
     for cname, grp in ordered:
         code = str(grp.get("code") or "?").upper()
         zh = COUNTRY_ZH.get(code) or (code if code and code != "?" else cname)
@@ -584,8 +604,11 @@ def build_sub_text(data):
             chain_json = json.dumps(chain, separators=(",", ":"))
             enc = _b64_secret_encode(chain_json, EDT_UUID)
             path = quote("/video/" + enc, safe="")
+            # The entry is dial-only; SNI and WS Host remain EDT_DOMAIN.
+            entry = EDGE_HOSTS[idx % len(EDGE_HOSTS)] if EDGE_HOSTS else f"{EDT_DOMAIN}:443"
+            idx += 1
             link = (
-                f"vless://{EDT_UUID}@{EDT_DOMAIN}:443?security=tls&type=ws"
+                f"vless://{EDT_UUID}@{entry}?security=tls&type=ws"
                 f"&host={EDT_DOMAIN}&fp={EDT_FINGERPRINT}&sni={EDT_DOMAIN}"
                 f"&path={path}&encryption=none&alpn=#{quote(name, safe='')}"
             )
@@ -677,6 +700,8 @@ def main():
     log("RESULT", f"可用节点: {len(success)}")
     log("RESULT", f"国家数量: {data['stats']['countries']}")
 
+    global EDGE_HOSTS
+    EDGE_HOSTS = resolve_edge_hosts()
     data_path, html_path, chains_path, hosts_path, sub_path = write_outputs(data)
     log("WEBSITE", f"生成 {os.path.relpath(data_path, REPO_DIR)}")
     log("WEBSITE", f"生成 {os.path.relpath(html_path, REPO_DIR)}")
