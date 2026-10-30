@@ -6,15 +6,13 @@ import requests
 DEFAULT_URL = "https://bestcf.pages.dev/tiancheng/kr.txt"
 # Cloudflare commonly supported TLS proxy ports; other ports may be ordinary relays.
 TLS_PORTS = {443, 2053, 2083, 2087, 2096, 8443}
-LINE_RE = re.compile(r"^\s*((?:\d{1,3}\.){3}\d{1,3}):(\d{1,5})(?=\s|#|$)")
+LINE_RE = re.compile(r"(?<![\d.])((?:\d{1,3}\.){3}\d{1,3}):(\d{1,5})(?=\s|#|$)")
 
 def parse_endpoints(raw, allowed_ports=TLS_PORTS):
     """Parse one IP:port per line with optional #comment; dedupe, preserve order."""
     results, seen = [], set()
-    for line in raw.splitlines():
-        match = LINE_RE.match(line)
-        if not match:
-            continue
+    # Some providers return newline-delimited entries; others flatten the text.
+    for match in LINE_RE.finditer(raw):
         ip, port_raw = match.groups()
         try:
             ipaddress.IPv4Address(ip)
