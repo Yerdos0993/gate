@@ -620,7 +620,7 @@ def write_outputs(data):
     os.makedirs(PUBLIC_DIR, exist_ok=True)
     # Export the exact selected endpoints as a comma-separated list for inspection.
     with open(os.path.join(PUBLIC_DIR, "edge_hosts.txt"), "w", encoding="utf-8") as f:
-        f.write(",".join(EDGE_HOSTS) + "\\n")
+        f.write(",".join(EDGE_HOSTS) + "\n")
     data_path = os.path.join(PUBLIC_DIR, "data.json")
     with open(data_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=1)
