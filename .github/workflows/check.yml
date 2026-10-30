@@ -40,6 +40,11 @@ jobs:
           CHECK_TIMEOUT: "90"
           EDT_UUID: ${{ secrets.EDT_UUID }}
           EDT_DOMAIN: ${{ secrets.EDT_DOMAIN }}
+          # Optional manual IP:port override; otherwise fetch BestCF automatically.
+          EDGE_HOSTS: ${{ vars.EDGE_HOSTS }}
+          HOSTS_ENTRY: ${{ vars.HOSTS_ENTRY }}
+          BESTCF_URL: https://bestcf.pages.dev/tiancheng/kr.txt
+          BESTCF_ENABLED: ${{ vars.BESTCF_ENABLED }}
 
       - name: Ensure GitHub Pages is enabled (one-time auto setup)
         run: |
