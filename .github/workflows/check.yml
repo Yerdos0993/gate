@@ -78,9 +78,43 @@ jobs:
         with:
           path: 'public'
 
+  deploy:
+    name: Deploy GitHub Pages
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+      actions: read
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Wait for Pages artifact to become visible
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          for i in $(seq 1 12); do
+            count=$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts?per_page=100" \
+              --jq '[.artifacts[] | select(.name == "github-pages" and .expired == false)] | length' 2>/dev/null || echo 0)
+            if [ "$count" = "1" ]; then
+              echo "Pages artifact visible via API."
+              # Give Pages deployment metadata service time to observe the artifact.
+              sleep 10
+              exit 0
+            fi
+            echo "Pages artifact not yet visible (attempt $i/12)."
+            sleep 5
+          done
+          echo "::error::Pages artifact was not found in this workflow run."
+          exit 1
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
 
       - name: Show site URL
-        run: 'echo "site: https://github.com/Yerdos0993/gate/ (deploy outcome: ${{ steps.deployment.outcome }})"'
+        run: 'echo "Published: ${{ steps.deployment.outputs.page_url }}"'
